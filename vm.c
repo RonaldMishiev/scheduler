@@ -78,6 +78,17 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
   return &pgtab[PTX(va)];
 }
 
+// Get physical Address of page from virtual address of process
+uint get_physical_addr_page(struct proc *p, uint addr)
+{
+  pte_t *pte = walkpgdir(p->pgdir, (char *)addr, 0);
+  if (!*pte)
+  {
+    return 0;
+  }
+  return PTE_ADDR(*pte);
+}
+
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
@@ -430,4 +441,5 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 // Blank page.
 //PAGEBREAK!
 // Blank page.
+
 

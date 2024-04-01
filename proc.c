@@ -20,25 +20,6 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
-void print()
-{
-  cprintf("*************************************************\n");
-  struct proc *p;
-  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-  {
-    if (p->totalM == 0)
-      continue;
-    for (int i = 0; i < p->totalM; i++)
-    {
-      if (p->m[i].pid != 0)
-      {
-        cprintf("pid: %d, state:%d, mutex.id: %d, mutex.locked: %d,priority: %d, wait_mutex:%d\n", p->pid, p->state, p->m[i].id, p->m[i].locked, p->priority, p->wm);
-      }
-    }
-  }
-  cprintf("*************************************************\n");
-}
-
 void pinit(void)
 {
   initlock(&ptable.lock, "ptable");
@@ -438,6 +419,7 @@ void scheduler(void)
 {
   struct proc *p;
   struct proc *p1;
+
   struct cpu *c = mycpu();
   c->proc = 0;
 
@@ -445,51 +427,69 @@ void scheduler(void)
   {
     // Enable interrupts on this processor.
     sti();
-
+    struct proc *prevHighP = 0;  //this is added as sanity check to avoid reusing same p if priority match??need to figure out better way (primarely for test_11)
     struct proc *highP = 0;
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
     for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
     {
-      
-      if (p->state != RUNNABLE)  continue;
-      //if(p->pid ==3 || p->pid == 4) cprintf("SCHEDULER pid:%d - state:%d \n", p->pid, p->state);
-      p->tempPriority = p->priority;
+    //     if (strncmp(p->name, "initcode", sizeof("initcode")) != 0 &&
+    //   strncmp(p->name, "init", sizeof("init")) != 0 &&
+    //  strncmp(p->name, "sh", sizeof("sh")) != 0 && p->pid>2)   cprintf("starting p = %s, state: %d \n",  p->name, p->state); 
+      if (p->state != RUNNABLE)
+      {
+        continue;
+      }
+     
       highP = p;
-
+      //int counter = 0;
       for (p1 = ptable.proc; p1 < &ptable.proc[NPROC]; p1++)
       {
-       
-        if ((p1->state != RUNNABLE) || p == p1)
+        if (p1->state != RUNNABLE)
+        {
           continue;
-        // this is for scenario where no mutax locks are set and we doing simple priority check 
-        //- basiclly looking for min nnumber (remember min number meanst highest priority)
-        if (p->totalM == 0 && p1->priority < highP->priority)
+        }
+        if (p1->totalM == 0)
+        {
+          //cprintf("%s->%d: < highP:%s->%d\n",p1->name,p1->priority, highP->name,highP->priority);
+          if (p1->priority < highP->priority)
           {
-           //cprintf("highP pid: %d\n", p->pid);
+
             highP = p1;
           }
-
-        // this is for scenario where mutax locks are set and we checkign for priority investion
-        // - basically preventing  low priorty  process to hold lock that being waited by high priority process 
-        for (int i = 0; i < p->totalM; i++)
+        }
+        else
         {
-          if (p->m[i].locked && p->m[i].id == p1->wm && p->priority > p1->priority)
+          struct proc *px;
+          for (px = ptable.proc; px < &ptable.proc[NPROC]; px++)
           {
-            p->tempPriority = p1->priority;
-            if (p->tempPriority < highP->priority)
+            if (px->state != RUNNABLE && p1 == px)
             {
-              highP = p;
+              continue;
             }
-          }
-          else if (p->priority < highP->priority)
-          {
-            highP = p;
+            // this is for scenario where mutax locks are set and we checkign for priority investion
+            // - basically preventing  low priorty  process to hold lock that being waited by high priority process
+            for (int i = 0; i < p1->totalM; i++)
+            {
+              if (p1->m[i].locked && p1->m[i].id > 0 && p1->m[i].id == px->wm && p1->priority > px->priority)
+              {
+                p1->tempPriority = p1->priority; // back up current priority number
+                p1->priority = px->priority;
+                if (p1->priority < highP->priority)
+                {
+                  highP = p;
+                }
+              }
+              else if (p1->priority < highP->priority)
+              {
+                highP = p1;
+              }
+            }
           }
         }
       }
+      if( prevHighP == highP) continue;
       p = highP;
-      //cprintf("pid: %d, state:%d,priority: %d, wait_mutex:%d\n", p->pid, p->state, p->priority);
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
@@ -502,7 +502,20 @@ void scheduler(void)
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       c->proc = 0;
+      struct proc *p2;
+      // reset priorities to original number
+      for (p2 = ptable.proc; p2 < &ptable.proc[NPROC]; p2++)
+      {
+        if (p2->tempPriority > 0)
+        {
+          p2->priority = p2->tempPriority;
+          p2->tempPriority = 0;
+          // cprintf("*** reset prioroty pid: %d\n", p2->pid);
+        }
+      }
+       prevHighP = highP;
     }
+
     release(&ptable.lock);
   }
 }
@@ -587,10 +600,6 @@ void sleep(void *chan, struct spinlock *lk)
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
-  // if( myproc()->pid == 4 || myproc()->pid == 5) {
-  //   cprintf("---sleep pid:%d\n", myproc()->pid);
-  //   print();
-  // }
   sched();
 
   // Tidy up.
@@ -702,115 +711,46 @@ void procdump(void)
   }
 }
 
-uint random(void)
-{
-  // Take from http://stackoverflow.com/questions/1167253/implementation-of-rand
-  static unsigned int z1 = 12345, z2 = 12345, z3 = 12345, z4 = 12345;
-  unsigned int b;
-  b = ((z1 << 6) ^ z1) >> 13;
-  z1 = ((z1 & 4294967294U) << 18) ^ b;
-  b = ((z2 << 2) ^ z2) >> 27;
-  z2 = ((z2 & 4294967288U) << 2) ^ b;
-  b = ((z3 << 13) ^ z3) >> 21;
-  z3 = ((z3 & 4294967280U) << 7) ^ b;
-  b = ((z4 << 3) ^ z4) >> 12;
-  z4 = ((z4 & 4294967168U) << 13) ^ b;
-
-  return (z1 ^ z2 ^ z3 ^ z4) / 2;
-}
-void wait_for_lock(void *chan, struct spinlock *lk, int id)
-{
-  struct proc *p = myproc();
-  if (p == 0)
-    panic("sleep");
-
-  if (lk == 0)
-    panic("sleep without lk");
-
-  // Must acquire ptable.lock in order to
-  // change p->state and then call sched.
-  // Once we hold ptable.lock, we can be
-  // guaranteed that we won't miss any wakeup
-  // (wakeup runs with ptable.lock locked),
-  // so it's okay to release lk.
-  if (lk != &ptable.lock)
-  {                        // DOC: sleeplock0
-    acquire(&ptable.lock); // DOC: sleeplock1
-    release(lk);
-  }
-  // Go to sleep.
-  // p->chan = chan;
-  // p->state = SLEEPING;
-
-  p->wm = id;
-  //   sched();
-  //   //Tidy up.
-  //  p->chan = 0;
-
-  // Reacquire original lock.
-  if (lk != &ptable.lock)
-  { // DOC: sleeplock2
-    release(&ptable.lock);
-    acquire(lk);
-  }
-  // cprintf("---waiting to acquire mutex with id:%d and pid %d\n", id, myproc()->pid);
-}
-
 void macquire(mutex *lk)
 {
+
+  struct proc *p = myproc();
+  if (!lk->id)  //in case mutex is not initialized
+  {
+    lk->id = get_physical_addr_page(p, (uint)lk);
+  }
   acquire(&lk->lk);
   while (lk->locked)
   {
-    lk->pid = myproc()->pid;
-    wait_for_lock(lk, &lk->lk, lk->id);
+    acquire(&ptable.lock);
+    p->wm = lk->id;
+    release(&ptable.lock);
     sleep(lk, &lk->lk);
   }
-  // mutex empty;
-  // empty.locked = 0;
-  // empty.pid = 0;
-
   lk->locked = 1;
-  lk->pid = myproc()->pid;
-
-  // start update proc
-  if (&lk->lk != &ptable.lock)
-  {                        // DOC: sleeplock0
-    acquire(&ptable.lock); // DOC: sleeplock1
-    release(&lk->lk);
-  }
-  // Go to sleep.
-  myproc()->chan = (void *)&lk;
-  myproc()->wm = 0;
-  myproc()->m[myproc()->totalM] = *lk;
-  myproc()->totalM++;
-  myproc()->state = RUNNABLE;
-  sched();
-
-  // Reacquire original lock.
-  if (&lk->lk != &ptable.lock)
-  { // DOC: sleeplock2
-    release(&ptable.lock);
-    acquire(&lk->lk);
-  }
-  // finish update proc
+  acquire(&ptable.lock);
+  p->wm = 0;
+  p->m[p->totalM] = *lk;
+  p->totalM++;
+  release(&ptable.lock);
   release(&lk->lk);
-  // cprintf("---macquire mutex with id:%d and pid %d\n", myproc()->m[myproc()->totalM-1].id, myproc()->pid);
 }
 
 void mrelease(mutex *lk)
 {
+  struct proc *p = myproc();
   acquire(&lk->lk);
   // start update proc
-  if (&lk->lk != &ptable.lock)
-  {                        // DOC: sleeplock0
-    acquire(&ptable.lock); // DOC: sleeplock1
-    release(&lk->lk);
-  }
+  // if (&lk->lk != &ptable.lock)
+  // {                        // DOC: sleeplock0
+  acquire(&ptable.lock); // DOC: sleeplock1
+  //   release(&lk->lk);
+  // }
   // go thru maps
   int found = 0;
-  for (int i = 0; i < myproc()->totalM; i++)
+  for (int i = 0; i < p->totalM; i++)
   {
-    if (myproc()->pid == lk->pid)
+    if (p->pid == lk->pid)
     {
       found = i;
       break;
@@ -818,32 +758,33 @@ void mrelease(mutex *lk)
   }
   //  if (found == -1) return FAILED; //not found
   // clear & shift em
-  memmove(&myproc()->m[found], &myproc()->m[found + 1], sizeof(mutex) * (myproc()->totalM - found - 1));
-  myproc()->totalM--;
+  memmove(&p->m[found], &p->m[found + 1], sizeof(mutex) * (p->totalM - found - 1));
+  p->totalM--;
 
   // Reacquire original lock.
-  if (&lk->lk != &ptable.lock)
-  { // DOC: sleeplock2
-    release(&ptable.lock);
-    acquire(&lk->lk);
-  }
+  // if (&lk->lk != &ptable.lock)
+  // { // DOC: sleeplock2
+  release(&ptable.lock);
+  //   acquire(&lk->lk);
+  // }
 
   lk->locked = 0;
-  lk->pid = 0;
   wakeup(lk);
   release(&lk->lk);
-  // cprintf("---mrelease pid:%d, id:%d with priority:%d\n", myproc()->pid, lk->id, myproc()->priority);
 }
 
 int nice(int inc)
 {
-
+  struct proc *p = myproc();
+  acquire(&ptable.lock);
   if (inc > 19)
     inc = 19;
   else if (inc < -20)
     inc = -20;
-  pushcli();
-  myproc()->priority = inc;
-  popcli();
+
+  // pushcli();
+  p->priority = inc;
+  // popcli();
+  release(&ptable.lock);
   return 0;
 }
