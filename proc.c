@@ -427,6 +427,7 @@ void scheduler(void)
   {
     // Enable interrupts on this processor.
     sti();
+    int prevHighPCounter = 0;
     struct proc *prevHighP = 0;  //this is added as sanity check to avoid reusing same p if priority match??need to figure out better way (primarely for test_11)
     struct proc *highP = 0;
     // Loop over process table looking for process to run.
@@ -488,7 +489,11 @@ void scheduler(void)
           }
         }
       }
-      if( prevHighP == highP) continue;
+      if( prevHighP == highP && !prevHighPCounter)  {
+        prevHighPCounter ++;
+        continue;
+      }
+      prevHighPCounter = 0;
       p = highP;
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
